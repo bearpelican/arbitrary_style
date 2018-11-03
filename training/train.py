@@ -187,10 +187,10 @@ for e in range(epochs):
         if (batch_id + 1) % log_interval == 0:
             time_elapsed = (time.time() - start)/60
             b_tot = len(train_dl)
-            mesg = (f"MIN:{time_elapsed:.3f}\tEP[{e+1}]\tB[{batch_id+1:4}/{b_tot}]\t"
-                    f"CON:{agg_content_loss:.3f}\tSTYL:{agg_style_loss:.3f}\t"
-                    f"TVA:{agg_tva_loss:.3f}\tTOT:{agg_total_loss:.3f}\t"
-                    f"S_CT:{style_image_count:4}\tCT:{count:6}"
+            mesg = (f"MIN:{time_elapsed:.2f}\tEP[{e+1}]\tB[{batch_id+1:4}/{b_tot}]\t"
+                    f"CON:{agg_content_loss:.3f}\tSTYL:{agg_style_loss:.2f}\t"
+                    f"TVA:{agg_tva_loss:.2f}\tTOT:{agg_total_loss:.2f}\t"
+                    f"S/CT:{style_image_count:3}/{count:3}"
                    )
             print(mesg)
         
