@@ -4,8 +4,8 @@ import argparse
 import ncluster
 import os
 
-IMAGE_NAME = 'pytorch.imagenet.source.v7'
-INSTANCE_TYPE = 'p3.2xlarge'
+IMAGE_NAME = 'style_transfer_v0'
+INSTANCE_TYPE = 'p3.16xlarge'
 NUM_GPUS = 8
 
 ncluster.set_backend('aws')
@@ -89,7 +89,7 @@ def main():
                           num_tasks=args.machines,
                           image_name=IMAGE_NAME,
                           instance_type=INSTANCE_TYPE,
-                          install_script=open('setup.sh').read(),
+                        #   install_script=open('setup.sh').read(),
                           spot=True
                           )
   job.upload('training')
