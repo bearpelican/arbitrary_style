@@ -13,7 +13,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 import argparse
 
-PATH = Path('../fastai_docs/data')
+PATH = Path('../../data')
 MODEL_PATH = PATH/'models'
 MODEL_PATH.mkdir(exist_ok=True)
 save_tag = 'imagenet_magenta'
@@ -55,7 +55,7 @@ if is_distributed:
     assert(env_world_size() == dist.get_world_size())
     print("Distributed: success (%d/%d)"%(args.local_rank, dist.get_world_size()))
 
-IMAGENET_PATH = Path('../data/imagenet-sz/160/train')
+IMAGENET_PATH = PATH/'imagenet-sz/160/train'
 train_ds = ImageClassificationDataset.from_folder(IMAGENET_PATH)
 
 # size,bs = 96,36
