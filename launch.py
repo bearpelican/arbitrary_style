@@ -99,7 +99,9 @@ def main():
   nccl_params = get_nccl_params(args.machines, NUM_GPUS)
 
   # Training script args
-  default_params = ['--load']
+  default_params = [
+    #   '--load'
+      ]
 
   params = ['--phases', schedules[args.machines]]
   training_params = default_params + params

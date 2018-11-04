@@ -85,8 +85,8 @@ train_dl = DeviceDataLoader.create(train_tds, tfms=data_norm, num_workers=8, bs=
 
 # Style Data
 
-# STYLE_PATH = PATH/'style/dtd/images'
-STYLE_PATH = PATH/'style/dtd/subset'
+STYLE_PATH = PATH/'style/dtd/images'
+# STYLE_PATH = PATH/'style/dtd/subset'
 style_ds = ImageClassificationDataset.from_folder(STYLE_PATH)
 
 # STYLE_PATH = PATH/'style/pbn/train'
@@ -123,10 +123,11 @@ m_vgg = VGGActivations().cuda()
 
 if is_distributed: 
     m_com = DDP(m_com, device_ids=[args.local_rank], output_device=args.local_rank)
+    # m_vgg = DDP(m_vgg, device_ids=[args.local_rank], output_device=args.local_rank)
 
 load_path = MODEL_PATH/f'model_combined_{save_tag}.pth'
 if args.load and load_path.exists(): 
-    m_com.load_state_dict(torch.load(load_path), strict=True)
+    m_com.load_state_dict(torch.load(load_path, map_location=lambda storage,loc: storage.cuda(args.local_rank)), strict=True)
     
 # Training
 epochs = 3
@@ -182,6 +183,8 @@ for e in range(epochs):
         out,_ = data_norm((out,None))
         inp_feat = m_vgg(out)
         
+        st_wgt_mult = 1 if args.load else ((batch_id+10)/batch_tot)*(e+1) * 2
+        style_wgts = [i*min(st_wgt,st_wgt*st_wgt_mult) for i in [1,800,20,1]] # 2,3,4,5
         closs = [ct_loss(inp_feat[c_block],targ_feat) * ct_wgt]
         sloss = [gram_loss(inp,targ)*wgt for inp,targ,wgt in zip(inp_feat, style_feat, style_wgts) if wgt > 0]
         tvaloss = tva_loss(out) * tva_wgt
@@ -206,8 +209,7 @@ for e in range(epochs):
         
         if (batch_id + 1) % log_interval == 0:
             time_elapsed = (time.time() - start)/60
-            b_tot = len(train_dl)
-            mesg = (f"MIN:{time_elapsed:.2f}\tEP[{e+1}]\tB[{batch_id+1:4}/{b_tot}]\t"
+            mesg = (f"MIN:{time_elapsed:.2f}\tEP[{e+1}]\tB[{batch_id+1:4}/{batch_tot}]\t"
                     f"CON:{agg_content_loss:.3f}\tSTYL:{agg_style_loss:.2f}\t"
                     f"TVA:{agg_tva_loss:.2f}\tTOT:{agg_total_loss:.2f}\t"
                     f"S/CT:{style_image_count:3}/{count:3}"
