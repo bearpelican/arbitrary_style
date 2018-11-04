@@ -169,7 +169,7 @@ for e in range(epochs):
             style_image_count = 1
             
         with torch.no_grad(): 
-            style_batch = x_style.repeat(bs,1,1,1)
+            style_batch = x_style.repeat(x_con.size(0),1,1,1)
             s_out = m_vgg(style_batch)
             style_feat = [s.clone() for s in s_out]
             
@@ -184,7 +184,7 @@ for e in range(epochs):
         inp_feat = m_vgg(out)
         
         st_wgt_mult = 1 if args.load else ((batch_id+10)/batch_tot)*(e+1) * 2
-        style_wgts = [i*min(st_wgt,st_wgt*st_wgt_mult) for i in [1,800,20,1]] # 2,3,4,5
+        style_wgts = [i*min(st_wgt,st_wgt*st_wgt_mult) for i in [5,800,20,1]] # 2,3,4,5
         closs = [ct_loss(inp_feat[c_block],targ_feat) * ct_wgt]
         sloss = [gram_loss(inp,targ)*wgt for inp,targ,wgt in zip(inp_feat, style_feat, style_wgts) if wgt > 0]
         tvaloss = tva_loss(out) * tva_wgt

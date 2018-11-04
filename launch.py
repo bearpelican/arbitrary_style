@@ -100,7 +100,7 @@ def main():
 
   # Training script args
   default_params = [
-    #   '--load'
+      '--load'
       ]
 
   params = ['--phases', schedules[args.machines]]
