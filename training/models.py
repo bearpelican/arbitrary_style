@@ -17,8 +17,8 @@ class CombinedModel(nn.Module):
 class StyleInstanceNorm2d(nn.InstanceNorm2d):
     def forward(self, input):
         self._check_input_dim(input)
-        weight = self.weight * self.style_weight if hasattr(self, 'style_weight') else self.weight
-        bias = self.bias * self.style_bias if hasattr(self, 'style_bias') else self.bias
+        weight = self.style_weight if hasattr(self, 'style_weight') else self.weight
+        bias = self.style_bias if hasattr(self, 'style_bias') else self.bias
         
             
         return F.instance_norm(
