@@ -7,13 +7,18 @@ from adamw import AdamW
 from scheduler import Scheduler
 from models import *
 
-import torch.distributed as dist
+# import torch.distributed as dist
+# from torch.utils.data.distributed import DistributedSampler
+# from torch.nn.parallel import DistributedDataParallel
+
+
+import torch.distributed.deprecated as dist
 from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel
+from torch.nn.parallel.deprecated import DistributedDataParallel
 
 import argparse
 
-PATH = Path('../../data')
+PATH = Path('data')
 MODEL_PATH = PATH/'models'
 MODEL_PATH.mkdir(exist_ok=True)
 save_tag = 'imagenet_magenta'
@@ -24,15 +29,22 @@ def get_parser():
 #     parser.add_argument('data', metavar='DIR', help='path to dataset')
     parser.add_argument('--phases', type=str, help='Learning rate schedule')
     parser.add_argument('-j', '--workers', default=8, type=int, help='number of data loading workers (default: 8)')
-    parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number (useful on restarts)')
-    parser.add_argument('--momentum', default=0.9, type=float, help='momentum')
     parser.add_argument('--print-freq', '-p', default=5, type=int, help='print every')
     parser.add_argument('--dist-url', default='env://', type=str, help='url used to set up distributed training')
     parser.add_argument('--dist-backend', default='nccl', type=str, help='distributed backend')
     parser.add_argument('--local_rank', default=0, type=int, help='Used for multi-process training')
+    parser.add_argument('--load', action='store_true', help='Load model')
+    parser.add_argument('--save', action='store_true', help='Save model')
+    # parser.add_argument('--resume', default='', type=str, metavar='PATH',
+    #                     help='path to latest checkpoint (default: none)')
+    # parser.add_argument('--save', default='', type=str, metavar='PATH',
+    #                     help='path to latest checkpoint (default: none)')
     return parser
 
 # Distributed
+class DDP(DistributedDataParallel):
+  def load_state_dict(self, *args, **kwargs): self.module.load_state_dict(*args, **kwargs)
+  def state_dict(self, *args, **kwargs): return self.module.state_dict(*args, **kwargs)
 def reduce_tensor(tensor): return sum_tensor(tensor)/env_world_size()
 def sum_tensor(tensor):
     rt = tensor.clone()
@@ -48,6 +60,8 @@ if args.local_rank > 0:
     f = open('/dev/null', 'w')
     sys.stdout = f
 
+print('Starting script')
+
 if is_distributed:
     print('Distributed initializing process group')
     torch.cuda.set_device(args.local_rank)
@@ -55,12 +69,12 @@ if is_distributed:
     assert(env_world_size() == dist.get_world_size())
     print("Distributed: success (%d/%d)"%(args.local_rank, dist.get_world_size()))
 
-IMAGENET_PATH = PATH/'imagenet-sz/160/train'
+IMAGENET_PATH = PATH/'imagenet-sz/320/train'
 train_ds = ImageClassificationDataset.from_folder(IMAGENET_PATH)
 
-# size,bs = 96,36
-size,bs = 128,32
-# size,bs = 256,20
+# size,bs = 96,40
+# size,bs = 128,36
+size,bs = 256,20
 
 # Content Data
 data_norm,data_denorm = normalize_funcs(*imagenet_stats)
@@ -81,7 +95,7 @@ style_ds = ImageClassificationDataset.from_folder(STYLE_PATH)
 style_tds = DatasetTfm(style_ds, tfms=[crop_pad(size=size, is_random=False)], tfm_y=False, size=size, do_crop=True)
 style_dl = DeviceDataLoader.create(style_tds, tfms=data_norm, num_workers=8, bs=1, shuffle=True)
 
-
+print('Loaded data')
 
 # Loss Functions
 # losses
@@ -108,12 +122,13 @@ m_com = CombinedModel(mt, ms).cuda()
 m_vgg = VGGActivations().cuda()
 
 if is_distributed: 
-    m_com = DistributedDataParallel(m_com, device_ids=[args.local_rank], output_device=args.local_rank)
-    m_vgg = DistributedDataParallel(m_vgg, device_ids=[args.local_rank], output_device=args.local_rank)
-    
+    m_com = DDP(m_com, device_ids=[args.local_rank], output_device=args.local_rank)
+
+load_path = MODEL_PATH/f'model_combined_{save_tag}.pth'
+if args.load and load_path.exists(): 
+    m_com.load_state_dict(torch.load(load_path), strict=True)
     
 # Training
-
 epochs = 3
 log_interval = 50
 optimizer = AdamW(m_com.parameters(), lr=1e-5, betas=(0.9,0.999), weight_decay=1e-5)
@@ -122,11 +137,12 @@ lr_mult = env_world_size()
 scheduler = Scheduler(optimizer, [{'ep': (0,1),      'lr': (1e-5*lr_mult,5e-4*lr_mult)}, 
                                   {'ep': (1,2),      'lr': (5e-4*lr_mult,1e-5*lr_mult)},
                                   {'ep': (2,epochs), 'lr': (1e-5*lr_mult,1e-7*lr_mult)}])
-style_wgts = [i*1e9 for i in [5,50,5,.5]] # 2,3,4,5
-c_block = 1 # 1=3
-ct_wgt = 1e3
-tva_wgt = 5e-6
 
+ct_wgt = 1e3
+st_wgt = 4e8
+tva_wgt = 5e-6
+style_wgts = [i*st_wgt for i in [1,800,20,1]] # 2,3,4,5
+c_block = 1 # 1=3
 
 
 start = time.time()
@@ -183,6 +199,10 @@ for e in range(epochs):
         agg_style_loss = agg_style_loss*mom + sum(sloss).detach().data*(1-mom)
         agg_tva_loss = agg_tva_loss*mom + tvaloss.detach().data*(1-mom)
         agg_total_loss = (agg_content_loss + agg_style_loss + agg_tva_loss)
+
+        if is_distributed: # Must keep track of global batch size, since not all machines are guaranteed equal batches at the end of an epoch
+            metrics = torch.tensor([agg_content_loss, agg_style_loss, agg_tva_loss, agg_total_loss]).float().cuda()
+            agg_content_loss, agg_style_loss, agg_tva_loss, agg_total_loss = reduce_tensor(metrics).cpu().numpy()
         
         if (batch_id + 1) % log_interval == 0:
             time_elapsed = (time.time() - start)/60
@@ -193,6 +213,11 @@ for e in range(epochs):
                     f"S/CT:{style_image_count:3}/{count:3}"
                    )
             print(mesg)
+
+        save_interval = 1000
+        if (args.local_rank == 0) and (batch_id+1) % save_interval == 0:
+            print('Saving checkpoint')
+            torch.save(m_com.state_dict(), MODEL_PATH/f'model_combined_{save_tag}.pth')
         
 def eval_imgs(x_con, x_style, idx=0):
     with torch.no_grad(): 

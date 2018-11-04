@@ -89,16 +89,17 @@ def main():
                           num_tasks=args.machines,
                           image_name=IMAGE_NAME,
                           instance_type=INSTANCE_TYPE,
+                        #   disk_size=1000,
                         #   install_script=open('setup.sh').read(),
-                          spot=True
+                        #   spot=True
                           )
   job.upload('training')
-  job.run(f'source activate fastai')
+  job.run(f'conda activate fastai')
 
   nccl_params = get_nccl_params(args.machines, NUM_GPUS)
 
   # Training script args
-  default_params = []
+  default_params = ['--load']
 
   params = ['--phases', schedules[args.machines]]
   training_params = default_params + params
@@ -108,10 +109,10 @@ def main():
   for i, task in enumerate(job.tasks):
     dist_params = f'--nproc_per_node=8 --nnodes={args.machines} --node_rank={i} --master_addr={job.tasks[0].ip} --master_port={6006}'
     cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} training/train.py {training_params}'
-    task.run(f'echo {cmd} > {job.logdir}/task-{i}.cmd')  # save command-line
+    # task.run(f'echo {cmd} > {job.logdir}/task-{i}.cmd')  # save command-line
     task.run(cmd, non_blocking=True)
 
-  print(f"Logging to {job.logdir}")
+#   print(f"Logging to {job.logdir}")
 
 
 if __name__ == '__main__':
