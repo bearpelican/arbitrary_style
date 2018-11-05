@@ -127,19 +127,19 @@ if args.load and load_path.exists():
     m_com.load_state_dict(torch.load(load_path.expanduser(), map_location=lambda storage,loc: storage.cuda(args.local_rank)), strict=True)
     
 # Training
-epochs = 8
+epochs = 10
 log_interval = 50
 optimizer = AdamW(m_com.parameters(), lr=1e-5, betas=(0.9,0.999), weight_decay=1e-5)
 
 lr_mult = env_world_size()
-scheduler = LRScheduler(optimizer, [{'ep': (0,2),      'lr': (1e-5*lr_mult,5e-4*lr_mult)}, 
-                                    {'ep': (2,4),      'lr': (5e-4*lr_mult,1e-5*lr_mult)},
-                                    {'ep': (4,epochs), 'lr': (1e-5*lr_mult,1e-7*lr_mult)}])
+scheduler = LRScheduler(optimizer, [{'ep': (0,3),      'lr': (1e-5*lr_mult,5e-4*lr_mult)}, 
+                                    {'ep': (3,6),      'lr': (5e-4*lr_mult,1e-5*lr_mult)},
+                                    {'ep': (6,epochs), 'lr': (1e-5*lr_mult,1e-7*lr_mult)}])
 
 st_wgt = 2.5e9
-st_scheduler = Scheduler([{'ep': (0,1), 'st': (st_wgt)}, 
-# st_scheduler = Scheduler([{'ep': (0,1), 'st': (st_wgt if args.load else 1e2,st_wgt*10)}, 
-                          {'ep': 1,     'st': (st_wgt)}], 'st')
+# st_scheduler = Scheduler([{'ep': (0,1), 'st': (st_wgt)}, 
+st_scheduler = Scheduler([{'ep': (0,2), 'st': (st_wgt if args.load else 1e2,st_wgt*4)}, 
+                          {'ep': 2,     'st': (st_wgt)}], 'st')
 ct_wgt = 5e2
 # st_wgt = 1e8
 tva_wgt = 1e-6

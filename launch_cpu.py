@@ -31,7 +31,9 @@ def main():
                         #   spot=True
                           )
   job.upload('training')
-  job.run(f'conda activate fastai')
+  job.run(f'source activate fastai')
+  job.run(f'cd training')
+  job.run(f'jnb')
 
 
 
