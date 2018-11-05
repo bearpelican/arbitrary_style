@@ -4,7 +4,7 @@ torch.backends.cudnn.benchmark=True
 import time
 
 from adamw import AdamW
-from scheduler import Scheduler
+from scheduler import Scheduler, LRScheduler
 from models import *
 
 # import torch.distributed as dist
@@ -19,9 +19,6 @@ from torch.nn.parallel.deprecated import DistributedDataParallel
 import argparse
 
 PATH = Path('data')
-MODEL_PATH = PATH/'models'
-MODEL_PATH.mkdir(exist_ok=True)
-save_tag = 'imagenet_magenta'
 
 # Parsing
 def get_parser():
@@ -33,12 +30,12 @@ def get_parser():
     parser.add_argument('--dist-url', default='env://', type=str, help='url used to set up distributed training')
     parser.add_argument('--dist-backend', default='nccl', type=str, help='distributed backend')
     parser.add_argument('--local_rank', default=0, type=int, help='Used for multi-process training')
-    parser.add_argument('--load', action='store_true', help='Load model')
-    parser.add_argument('--save', action='store_true', help='Save model')
-    # parser.add_argument('--resume', default='', type=str, metavar='PATH',
-    #                     help='path to latest checkpoint (default: none)')
-    # parser.add_argument('--save', default='', type=str, metavar='PATH',
-    #                     help='path to latest checkpoint (default: none)')
+    # parser.add_argument('--load', action='store_true', help='Load model')
+    parser.add_argument('--resnet', action='store_true', help='Use resnet arch')
+    parser.add_argument('--load', default='', type=str, metavar='PATH',
+                        help='path to latest checkpoint (default: none)')
+    parser.add_argument('--save', default='', type=str, metavar='PATH',
+                        help='path to latest checkpoint (default: none)')
     return parser
 
 # Distributed
@@ -78,7 +75,7 @@ size,bs = 256,20
 
 # Content Data
 data_norm,data_denorm = normalize_funcs(*imagenet_stats)
-train_tds = DatasetTfm(train_ds, tfms=[crop_pad(size=size, is_random=False)], tfm_y=False, size=size, do_crop=True)
+train_tds = DatasetTfm(train_ds, tfms=[crop_pad(size=size, is_random=False), flip_lr(p=0.5)], tfm_y=False, size=size, do_crop=True)
 
 data_sampler = DistributedSampler(train_tds, num_replicas=env_world_size(), rank=env_rank()) if is_distributed else None
 train_dl = DeviceDataLoader.create(train_tds, tfms=data_norm, num_workers=8, bs=bs, shuffle=(data_sampler is None), sampler=data_sampler)
@@ -86,13 +83,13 @@ train_dl = DeviceDataLoader.create(train_tds, tfms=data_norm, num_workers=8, bs=
 # Style Data
 
 STYLE_PATH = PATH/'style/dtd/images'
-# STYLE_PATH = PATH/'style/dtd/subset'
+# # STYLE_PATH = PATH/'style/dtd/subset'
 style_ds = ImageClassificationDataset.from_folder(STYLE_PATH)
 
 # STYLE_PATH = PATH/'style/pbn/train'
 # style_ds = ImageClassificationDataset.from_single_folder(STYLE_PATH, ['train'])
 
-style_tds = DatasetTfm(style_ds, tfms=[crop_pad(size=size, is_random=False)], tfm_y=False, size=size, do_crop=True)
+style_tds = DatasetTfm(style_ds, tfms=[crop_pad(size=size, is_random=False), flip_lr(p=0.5)], tfm_y=False, size=size, do_crop=True)
 style_dl = DeviceDataLoader.create(style_tds, tfms=data_norm, num_workers=8, bs=1, shuffle=True)
 
 print('Loaded data')
@@ -116,33 +113,37 @@ def tva_loss(y):
 
 # Create models
 mt = StyleTransformer()
-ms = StylePredict.create_inception()
+ms = StylePredict.create_resnet() if args.resnet else StylePredict.create_inception()
 m_com = CombinedModel(mt, ms).cuda()
 
 m_vgg = VGGActivations().cuda()
 
 if is_distributed: 
     m_com = DDP(m_com, device_ids=[args.local_rank], output_device=args.local_rank)
-    # m_vgg = DDP(m_vgg, device_ids=[args.local_rank], output_device=args.local_rank)
 
-load_path = MODEL_PATH/f'model_combined_{save_tag}.pth'
+load_path = Path(args.load)
 if args.load and load_path.exists(): 
-    m_com.load_state_dict(torch.load(load_path, map_location=lambda storage,loc: storage.cuda(args.local_rank)), strict=True)
+    print('Loading model from path:', load_path)
+    m_com.load_state_dict(torch.load(load_path.expanduser(), map_location=lambda storage,loc: storage.cuda(args.local_rank)), strict=True)
     
 # Training
-epochs = 3
+epochs = 8
 log_interval = 50
 optimizer = AdamW(m_com.parameters(), lr=1e-5, betas=(0.9,0.999), weight_decay=1e-5)
 
 lr_mult = env_world_size()
-scheduler = Scheduler(optimizer, [{'ep': (0,1),      'lr': (1e-5*lr_mult,5e-4*lr_mult)}, 
-                                  {'ep': (1,2),      'lr': (5e-4*lr_mult,1e-5*lr_mult)},
-                                  {'ep': (2,epochs), 'lr': (1e-5*lr_mult,1e-7*lr_mult)}])
+scheduler = LRScheduler(optimizer, [{'ep': (0,2),      'lr': (1e-5*lr_mult,5e-4*lr_mult)}, 
+                                    {'ep': (2,4),      'lr': (5e-4*lr_mult,1e-5*lr_mult)},
+                                    {'ep': (4,epochs), 'lr': (1e-5*lr_mult,1e-7*lr_mult)}])
 
-ct_wgt = 1e3
-st_wgt = 4e8
-tva_wgt = 5e-6
-style_wgts = [i*st_wgt for i in [1,800,20,1]] # 2,3,4,5
+st_wgt = 2.5e9
+st_scheduler = Scheduler([{'ep': (0,1), 'st': (st_wgt)}, 
+# st_scheduler = Scheduler([{'ep': (0,1), 'st': (st_wgt if args.load else 1e2,st_wgt*10)}, 
+                          {'ep': 1,     'st': (st_wgt)}], 'st')
+ct_wgt = 5e2
+# st_wgt = 1e8
+tva_wgt = 1e-6
+style_block_wgts = [1,80,200,5] # 2,3,4,5
 c_block = 1 # 1=3
 
 
@@ -170,6 +171,11 @@ for e in range(epochs):
             
         with torch.no_grad(): 
             style_batch = x_style.repeat(x_con.size(0),1,1,1)
+
+            # if True: x_con = style_batch
+
+
+
             s_out = m_vgg(style_batch)
             style_feat = [s.clone() for s in s_out]
             
@@ -183,8 +189,7 @@ for e in range(epochs):
         out,_ = data_norm((out,None))
         inp_feat = m_vgg(out)
         
-        st_wgt_mult = 1 if args.load else ((batch_id+10)/batch_tot)*(e+1) * 2
-        style_wgts = [i*min(st_wgt,st_wgt*st_wgt_mult) for i in [5,800,20,1]] # 2,3,4,5
+        style_wgts = [i*st_scheduler.get_val(e, batch_id, batch_tot) for i in style_block_wgts] # 2,3,4,5
         closs = [ct_loss(inp_feat[c_block],targ_feat) * ct_wgt]
         sloss = [gram_loss(inp,targ)*wgt for inp,targ,wgt in zip(inp_feat, style_feat, style_wgts) if wgt > 0]
         tvaloss = tva_loss(out) * tva_wgt
@@ -193,8 +198,9 @@ for e in range(epochs):
         total_loss = sum(total_loss)
     
         total_loss.backward()
-#         nn.utils.clip_grad_norm_(m_com.m_tran.parameters(), 10)
-#         nn.utils.clip_grad_norm_(m_com.m_style.parameters(), 80)
+        m_clip = m_com.module if is_distributed else m_com
+        nn.utils.clip_grad_norm_(m_clip.m_tran.parameters(), 10)
+        nn.utils.clip_grad_norm_(m_clip.m_style.parameters(), 100)
         optimizer.step()
     
         mom = 0.9
@@ -218,8 +224,16 @@ for e in range(epochs):
 
         save_interval = 1000
         if (args.local_rank == 0) and (batch_id+1) % save_interval == 0:
-            print('Saving checkpoint')
-            torch.save(m_com.state_dict(), MODEL_PATH/f'model_combined_{save_tag}.pth')
+            if args.save:
+                print('Saving model: ', args.save)
+                save_path = Path(args.save).expanduser()
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(m_com.state_dict(), save_path)
+
+                ep_save = save_path.with_name(f'{save_path.stem}_{e}').with_suffix(save_path.suffix)
+
+                print('Saving epoch checkpoint: ', ep_save)
+                torch.save(m_com.state_dict(), ep_save)
         
 def eval_imgs(x_con, x_style, idx=0):
     with torch.no_grad(): 

@@ -95,7 +95,7 @@ class StylePredict(nn.Module):
                                       nn.Conv2d(100, out_features, 1, stride=1))
         else:
             self.head = nn.Sequential(nn.AdaptiveAvgPool2d(1), Flatten(),
-                                      nn.Linear(in_features, 100), #nn.ReLU(inplace=True), 
+                                      nn.Linear(in_features, 100), nn.ReLU(inplace=True), 
                                       nn.Linear(100, out_features))
         for p in self.base.parameters():
             p.requires_grad_(False)
@@ -113,7 +113,7 @@ class StylePredict(nn.Module):
     @classmethod
     def create_resnet(cls):
         m_arch = resnet50(pretrained=True)
-        return StylePredict(m_arch)
+        return StylePredict(m_arch, cut_name='layer4', in_features=1024, conv=True)
 
 
 # VGG

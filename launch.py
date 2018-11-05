@@ -31,45 +31,7 @@ schedules = {1: one_machine}
 def get_nccl_params(num_tasks, num_gpus):
   if num_tasks <= 1:
     return 'NCCL_DEBUG=VERSION'
-  nccl_rings = get_nccl_rings(num_tasks, num_gpus)
-  return f'NCCL_RINGS="{nccl_rings}" NCCL_SINGLE_RING_THRESHOLD=10 NCCL_DEBUG=VERSION'
   # return 'NCCL_MIN_NRINGS=2 NCCL_SINGLE_RING_THRESHOLD=10 NCCL_DEBUG=VERSION'
-
-
-def get_nccl_rings(num_tasks, num_gpus):
-  ring = build_ring_order(range(num_tasks), range(num_gpus))
-  ring_rev = build_ring_order(reversed(range(num_tasks)),
-                              reversed(range(num_gpus)))
-  rotated_gpu_order = [3, 2, 1, 0, 7, 6, 5, 4]
-  skip_gpu_order = get_skip_order(num_gpus)
-  if (num_tasks >= 4) and (num_gpus == 8):
-    assert ((num_tasks % 4) == 0)
-    skip_machine_order = get_skip_order(num_tasks)
-    ring_skip = build_ring_order(skip_machine_order, rotated_gpu_order)
-    ring_skip_rev = build_ring_order(reversed(skip_machine_order),
-                                     skip_gpu_order)
-    rings_arr = [ring, ring_rev, ring_skip, ring_skip_rev]
-    # rings_arr = [ring, ring_rev, ring_skip]
-  else:
-    rings_arr = [ring, ring_rev]
-  return ' | '.join(rings_arr)
-
-
-def build_ring_order(machine_order, gpu_order):
-  gpu_order = list(gpu_order)
-  machine_order = list(machine_order)
-  ngpus = len(gpu_order)
-  r_order = [(x * ngpus) + y for x in machine_order for y in gpu_order]
-  return ' '.join(map(str, r_order))
-
-
-def get_skip_order(size):
-  if size == 4:
-    return [0, 2, 1, 3]
-  skip_step = 5 if size == 16 else 3
-  # step size of 3 yields - [0,3,6,1,4,7,2,5]
-  return [(i * skip_step) % size for i in range(size)]
-
 
 def format_params(arg):
   if isinstance(arg, list) or isinstance(arg, dict):
@@ -91,7 +53,8 @@ def main():
                           instance_type=INSTANCE_TYPE,
                         #   disk_size=1000,
                         #   install_script=open('setup.sh').read(),
-                        #   spot=True
+                        #   skip_efs=False,
+                          spot=True
                           )
   job.upload('training')
   job.run(f'conda activate fastai')
@@ -100,7 +63,11 @@ def main():
 
   # Training script args
   default_params = [
-      '--load'
+      # '--load', f'/ncluster/models/model_combined_imagenet_magenta_.pth',
+      '--load', f'/ncluster/models/{args.name}.pth',
+      '--dist-url', 'file:///home/ubuntu/data/file.sync',
+      '--resnet',
+      '--save', f'/ncluster/models/{args.name}.pth'
       ]
 
   params = ['--phases', schedules[args.machines]]
