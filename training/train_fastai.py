@@ -37,6 +37,9 @@ def get_parser():
 
 args = get_parser().parse_args()
 
+
+MODEL_PATH = Path(args.save).expanduser().parent
+
 is_distributed = env_world_size() > 1
 if args.local_rank > 0:
     f = open('/dev/null', 'w')
@@ -89,9 +92,51 @@ style_tds = DatasetTfm(style_ds, tfms=[crop_pad(size=size, is_random=False), fli
 style_dl = DeviceDataLoader.create(style_tds, tfms=data_norm, num_workers=8, bs=1, shuffle=True)
 
 # Data loader
-train_dl = ContentStyleLoader(cont_dl, style_dl, repeat_xy=False)
+train_dl = ContentStyleLoader(cont_dl, style_dl)
+data = SimpleDataBunch(train_dl, MODEL_PATH)
 
 print('Loaded data')
+
+
+# Callbacks
+class DistributedRecorder(Recorder):
+    def on_backward_begin(self, smooth_loss:Tensor, **kwargs:Any)->None:
+        if is_distributed:
+            metrics = torch.tensor([smooth_loss]).float().cuda()
+            smooth_loss = reduce_tensor(metrics).cpu().numpy()
+            
+        super().on_backward_begin(smooth_loss)
+
+@dataclass
+class WeightScheduler(Callback):
+    "Manage 1-Cycle style training as outlined in Leslie Smith's [paper](https://arxiv.org/pdf/1803.09820.pdf)."
+    learn:Learner
+    loss_func:TransferLoss
+    cont_phases:Collection[Tuple]
+    style_phases:Collection[Tuple]
+
+    def steps(self, phases):
+        "Build anneal schedule for all of the parameters."
+        n_batch = len(self.learn.data.train_dl)
+        return [Stepper((start,end),ep*n_batch,annealing_linear) for ep,start,end in phases]
+
+    def on_train_begin(self, n_epochs:int, **kwargs:Any)->None:
+        "Initialize our optimization params based on our annealing schedule."
+        self.style_scheds = list(reversed(self.steps(self.style_phases)))
+        self.cont_scheds = list(reversed(self.steps(self.cont_phases)))
+        
+        self.cur_style = self.style_scheds.pop()
+        self.cur_cont = self.cont_scheds.pop()
+
+    def on_batch_end(self, train, **kwargs:Any)->None:
+        "Take one step forward on the annealing schedule for the optim params."
+        if train:
+            self.loss_func.ct_wgt = self.cur_style.step()
+            self.loss_func.ct_wgt = self.cur_style.step()
+            
+            if self.cur_style.is_done: self.cur_style = self.style_scheds.pop()
+            if self.cur_cont.is_done: self.cur_cont = self.cont_scheds.pop()
+
 
 # Create models
 mt = StyleTransformer()
@@ -106,93 +151,29 @@ if args.load and load_path.exists():
     m_com.load_state_dict(torch.load(load_path.expanduser(), map_location=lambda storage,loc: storage.cuda(args.local_rank)), strict=True)
     
 # Training
-epochs = 10
-log_interval = 50
-optimizer = AdamW(m_com.parameters(), lr=1e-5, betas=(0.9,0.999), weight_decay=1e-5)
-
-lr_mult = env_world_size()
-scheduler = LRScheduler(optimizer, [{'ep': (0,3),      'lr': (1e-5*lr_mult,5e-4*lr_mult)}, 
-                                    {'ep': (3,6),      'lr': (5e-4*lr_mult,1e-5*lr_mult)},
-                                    {'ep': (6,epochs), 'lr': (1e-5*lr_mult,1e-7*lr_mult)}])
+opt_func = partial(AdamW, betas=(0.9,0.999), weight_decay=1e-3)
 
 st_wgt = 2.5e9
-# st_scheduler = Scheduler([{'ep': (0,1), 'st': (st_wgt)}, 
-st_scheduler = Scheduler([{'ep': (0,2), 'st': (st_wgt if args.load else 1e2,st_wgt*4)}, 
-                          {'ep': 2,     'st': (st_wgt)}], 'st')
 ct_wgt = 5e2
-# st_wgt = 1e8
 tva_wgt = 1e-6
-style_block_wgts = [1,80,200,5] # 2,3,4,5
+st_block_wgts = [1,80,200,5] # 2,3,4,5
 c_block = 1 # 1=3
+lr_mult = env_world_size()
+
+epochs = 10
+style_phases = [(2,1e2,st_wgt*3),(epochs,st_wgt,st_wgt)]
+cont_phases = [(2,ct_wgt,ct_wgt),(2,ct_wgt,ct_wgt*3),(epochs,ct_wgt,ct_wgt)]
 
 
 m_vgg = VGGActivations().cuda()
-m_loss = TransferLoss(m_vgg, ct_wgt, st_wgt, st_block_wgts, tva_wgt, data_norm, c_block, sum_loss=False)
+loss_func = TransferLoss(m_vgg, ct_wgt, st_wgt, st_block_wgts, tva_wgt, data_norm, c_block)
+
+learner = Learner(data, m_com, opt_func=opt_func, loss_func=loss_func)
+w_sched = partial(WeightScheduler, loss_func=loss_func, cont_phases=cont_phases, style_phases=style_phases)
+learner.callback_fns = [DistributedRecorder, w_sched, SaveModelCallback]
 
 
-
-start = time.time()
-m_com.train()
-style_image_count = 0
-for e in range(epochs):
-    agg_content_loss = 0.
-    agg_style_loss = 0.
-    agg_tva_loss = 0.
-    count = 0
-    batch_tot = len(train_dl)
-    for batch_id, (x_con,x_style) in enumerate(train_dl):
-        scheduler.update_lr(e, batch_id, batch_tot)
-            
-        n_batch = x_con.size(0)
-        count += n_batch
-        optimizer.zero_grad()
-        
-        out = m_com(x_con, x_style)
-        out,_ = data_norm((out,None))
-        
-        m_loss.style_wgt = st_scheduler.get_val(e, batch_id, batch_tot)
-        closs, sloss, tvaloss = m_loss(out, x_con, x_style)
-        
-        total_loss = closs + sloss + [tvaloss]
-        total_loss = sum(total_loss)
-    
-        total_loss.backward()
-        m_clip = m_com.module if is_distributed else m_com
-        nn.utils.clip_grad_norm_(m_clip.m_tran.parameters(), 10)
-        nn.utils.clip_grad_norm_(m_clip.m_style.parameters(), 100)
-        optimizer.step()
-    
-        mom = 0.9
-        agg_content_loss = agg_content_loss*mom + sum(closs).detach().data*(1-mom)
-        agg_style_loss = agg_style_loss*mom + sum(sloss).detach().data*(1-mom)
-        agg_tva_loss = agg_tva_loss*mom + tvaloss.detach().data*(1-mom)
-        agg_total_loss = (agg_content_loss + agg_style_loss + agg_tva_loss)
-
-        if is_distributed: # Must keep track of global batch size, since not all machines are guaranteed equal batches at the end of an epoch
-            metrics = torch.tensor([agg_content_loss, agg_style_loss, agg_tva_loss, agg_total_loss]).float().cuda()
-            agg_content_loss, agg_style_loss, agg_tva_loss, agg_total_loss = reduce_tensor(metrics).cpu().numpy()
-        
-        if (batch_id + 1) % log_interval == 0:
-            time_elapsed = (time.time() - start)/60
-            mesg = (f"MIN:{time_elapsed:.2f}\tEP[{e+1}]\tB[{batch_id+1:4}/{batch_tot}]\t"
-                    f"CON:{agg_content_loss:.3f}\tSTYL:{agg_style_loss:.2f}\t"
-                    f"TVA:{agg_tva_loss:.2f}\tTOT:{agg_total_loss:.2f}\t"
-                    f"S/CT:{style_image_count:3}/{count:3}"
-                   )
-            print(mesg)
-
-        save_interval = 1000
-        if (args.local_rank == 0) and (batch_id+1) % save_interval == 0:
-            if args.save:
-                print('Saving model: ', args.save)
-                save_path = Path(args.save).expanduser()
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(m_com.state_dict(), save_path)
-
-                ep_save = save_path.with_name(f'{save_path.stem}_{e}').with_suffix(save_path.suffix)
-
-                print('Saving epoch checkpoint: ', ep_save)
-                torch.save(m_com.state_dict(), ep_save)
+learner.fit_one_cycle(1, 1e-5*lr_mult)
 
 def eval_imgs(x_con, x_style, idx=0):
     with torch.no_grad(): 

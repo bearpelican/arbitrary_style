@@ -77,7 +77,8 @@ def main():
   # TODO: simplify args processing, or give link to actual commands run
   for i, task in enumerate(job.tasks):
     dist_params = f'--nproc_per_node=8 --nnodes={args.machines} --node_rank={i} --master_addr={job.tasks[0].ip} --master_port={6006}'
-    cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} training/train.py {training_params}'
+    cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} training/train_fastai.py {training_params}'
+    # cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} training/train.py {training_params}'
     # task.run(f'echo {cmd} > {job.logdir}/task-{i}.cmd')  # save command-line
     task.run(cmd, non_blocking=True)
 
