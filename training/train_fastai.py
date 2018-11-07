@@ -54,9 +54,6 @@ if is_distributed:
     assert(env_world_size() == dist.get_world_size())
     print("Distributed: success (%d/%d)"%(args.local_rank, dist.get_world_size()))
 
-IMAGENET_PATH = PATH/'imagenet-sz/320/train'
-train_ds = ImageClassificationDataset.from_folder(IMAGENET_PATH)
-
 # Batch size
 # size,bs = 96,40
 # size,bs = 128,36
@@ -100,12 +97,27 @@ print('Loaded data')
 
 # Callbacks
 class DistributedRecorder(Recorder):
-    def on_backward_begin(self, smooth_loss:Tensor, **kwargs:Any)->None:
+    def on_train_begin(self, pbar:PBar, metrics_names:Collection[str], **kwargs:Any)->None:
+        self.b_count = 0
+        super().on_train_begin(pbar, metrics_names, **kwargs)
+        
+    def on_backward_begin(self, last_loss:Tensor, smooth_loss:Tensor, **kwargs:Any)->None:
+        self.b_count += 1
         if is_distributed:
-            metrics = torch.tensor([smooth_loss]).float().cuda()
+            metrics = smooth_loss.clone().detach().float().cuda()
             smooth_loss = reduce_tensor(metrics).cpu().numpy()
+
+            if self.b_count % 50 == 0:
+                print('Losses:', smooth_loss)
             
-        super().on_backward_begin(smooth_loss)
+        super().on_backward_begin(smooth_loss.sum())
+        return last_loss.sum()
+
+    def on_epoch_end(self, epoch, **kwargs:Any)->None:
+        if args.local_rank == 0:
+            name = Path(args.save).stem
+            print('Saving model:', name)
+            self.learn.save(f'{name}_{epoch}')
 
 @dataclass
 class WeightScheduler(Callback):
@@ -131,9 +143,9 @@ class WeightScheduler(Callback):
     def on_batch_end(self, train, **kwargs:Any)->None:
         "Take one step forward on the annealing schedule for the optim params."
         if train:
-            self.loss_func.ct_wgt = self.cur_style.step()
-            self.loss_func.ct_wgt = self.cur_style.step()
-            
+            self.loss_func.cont_wgt = self.cur_cont.step()
+            self.loss_func.style_wgt = self.cur_style.step()
+
             if self.cur_style.is_done: self.cur_style = self.style_scheds.pop()
             if self.cur_cont.is_done: self.cur_cont = self.cont_scheds.pop()
 
@@ -150,6 +162,10 @@ if args.load and load_path.exists():
     print('Loading model from path:', load_path)
     m_com.load_state_dict(torch.load(load_path.expanduser(), map_location=lambda storage,loc: storage.cuda(args.local_rank)), strict=True)
     
+m_vgg = VGGActivations().cuda()
+
+print('Created models')
+
 # Training
 opt_func = partial(AdamW, betas=(0.9,0.999), weight_decay=1e-3)
 
@@ -165,15 +181,14 @@ style_phases = [(2,1e2,st_wgt*3),(epochs,st_wgt,st_wgt)]
 cont_phases = [(2,ct_wgt,ct_wgt),(2,ct_wgt,ct_wgt*3),(epochs,ct_wgt,ct_wgt)]
 
 
-m_vgg = VGGActivations().cuda()
 loss_func = TransferLoss(m_vgg, ct_wgt, st_wgt, st_block_wgts, tva_wgt, data_norm, c_block)
 
 learner = Learner(data, m_com, opt_func=opt_func, loss_func=loss_func)
 w_sched = partial(WeightScheduler, loss_func=loss_func, cont_phases=cont_phases, style_phases=style_phases)
-learner.callback_fns = [DistributedRecorder, w_sched, SaveModelCallback]
+learner.callback_fns = [DistributedRecorder, w_sched]
 
-
-learner.fit_one_cycle(1, 1e-5*lr_mult)
+print('Begin training')
+learner.fit_one_cycle(epochs, 1e-5*lr_mult)
 
 def eval_imgs(x_con, x_style, idx=0):
     with torch.no_grad(): 

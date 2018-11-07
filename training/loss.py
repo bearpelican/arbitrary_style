@@ -3,12 +3,11 @@ import torch
 from fastai import *
 
 class TransferLoss(nn.Module):
-    def __init__(self, m_vgg, cont_wgt, style_wgt, style_block_wgts, tva_wgt, data_norm, c_block=1, sum_loss=True):
+    def __init__(self, m_vgg, cont_wgt, style_wgt, style_block_wgts, tva_wgt, data_norm, c_block=1):
         super().__init__()
         self.style_wgt,self.style_block_wgts = style_wgt,style_block_wgts
         self.cont_wgt,self.tva_wgt = cont_wgt,tva_wgt
         self.m_vgg,self.data_norm,self.c_block = m_vgg,data_norm,c_block
-        self.sum_loss = sum_loss
         
     def forward(self, input, x_cont, x_style):
         style_wgts = [self.style_wgt*b for b in self.style_block_wgts]
@@ -27,10 +26,7 @@ class TransferLoss(nn.Module):
         sloss = [gram_loss(inp,targ)*wgt for inp,targ,wgt in zip(inp_feat, style_feat, style_wgts) if wgt > 0]
         tvaloss = tva_loss(input_norm) * self.tva_wgt
         
-        if self.sum_loss: 
-            total_loss = closs + sloss + [tvaloss]
-            return sum(total_loss)
-        else: return closs, sloss, tvaloss
+        return torch.stack((sum(closs), sum(sloss), tvaloss))
         
 # Loss Functions
 # losses

@@ -1,6 +1,7 @@
 import torch.distributed.deprecated as dist
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel.deprecated import DistributedDataParallel
+import os
 
 
 # import torch.distributed as dist

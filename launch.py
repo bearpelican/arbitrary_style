@@ -54,7 +54,7 @@ def main():
                         #   disk_size=1000,
                         #   install_script=open('setup.sh').read(),
                         #   skip_efs=False,
-                          spot=True
+                          # spot=True
                           )
   job.upload('training')
   job.run(f'conda activate fastai')

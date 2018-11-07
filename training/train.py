@@ -127,7 +127,7 @@ c_block = 1 # 1=3
 
 
 m_vgg = VGGActivations().cuda()
-m_loss = TransferLoss(m_vgg, ct_wgt, st_wgt, st_block_wgts, tva_wgt, data_norm, c_block, sum_loss=False)
+m_loss = TransferLoss(m_vgg, ct_wgt, st_wgt, st_block_wgts, tva_wgt, data_norm, c_block)
 
 
 
@@ -151,21 +151,19 @@ for e in range(epochs):
         out,_ = data_norm((out,None))
         
         m_loss.style_wgt = st_scheduler.get_val(e, batch_id, batch_tot)
-        closs, sloss, tvaloss = m_loss(out, x_con, x_style)
-        
-        total_loss = closs + sloss + [tvaloss]
-        total_loss = sum(total_loss)
-    
-        total_loss.backward()
+        total_loss = m_loss(out, x_con, x_style)
+        closs, sloss, tvaloss = total_loss.copy().detach().cpu()
+
+        total_loss.sum().backward()
         m_clip = m_com.module if is_distributed else m_com
         nn.utils.clip_grad_norm_(m_clip.m_tran.parameters(), 10)
         nn.utils.clip_grad_norm_(m_clip.m_style.parameters(), 100)
         optimizer.step()
     
         mom = 0.9
-        agg_content_loss = agg_content_loss*mom + sum(closs).detach().data*(1-mom)
-        agg_style_loss = agg_style_loss*mom + sum(sloss).detach().data*(1-mom)
-        agg_tva_loss = agg_tva_loss*mom + tvaloss.detach().data*(1-mom)
+        agg_content_loss = agg_content_loss*mom + closs*(1-mom)
+        agg_style_loss = agg_style_loss*mom + sloss*(1-mom)
+        agg_tva_loss = agg_tva_loss*mom + tvaloss*(1-mom)
         agg_total_loss = (agg_content_loss + agg_style_loss + agg_tva_loss)
 
         if is_distributed: # Must keep track of global batch size, since not all machines are guaranteed equal batches at the end of an epoch
