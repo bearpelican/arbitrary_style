@@ -23,7 +23,7 @@ def get_parser():
 #     parser.add_argument('data', metavar='DIR', help='path to dataset')
     parser.add_argument('--phases', type=str, help='Learning rate schedule')
     parser.add_argument('-j', '--workers', default=8, type=int, help='number of data loading workers (default: 8)')
-    parser.add_argument('--print-freq', '-p', default=5, type=int, help='print every')
+    parser.add_argument('--print-freq', '-p', default=50, type=int, help='print every')
     parser.add_argument('--dist-url', default='env://', type=str, help='url used to set up distributed training')
     parser.add_argument('--dist-backend', default='nccl', type=str, help='distributed backend')
     parser.add_argument('--local_rank', default=0, type=int, help='Used for multi-process training')
@@ -107,7 +107,6 @@ if args.load and load_path.exists():
     
 # Training
 epochs = 10
-log_interval = 50
 optimizer = AdamW(m_com.parameters(), lr=1e-5, betas=(0.9,0.999), weight_decay=1e-5)
 
 lr_mult = env_world_size()
@@ -170,7 +169,7 @@ for e in range(epochs):
             metrics = torch.tensor([agg_content_loss, agg_style_loss, agg_tva_loss, agg_total_loss]).float().cuda()
             agg_content_loss, agg_style_loss, agg_tva_loss, agg_total_loss = reduce_tensor(metrics).cpu().numpy()
         
-        if (batch_id + 1) % log_interval == 0:
+        if (batch_id + 1) % args.print_freq == 0:
             time_elapsed = (time.time() - start)/60
             mesg = (f"MIN:{time_elapsed:.2f}\tEP[{e+1}]\tB[{batch_id+1:4}/{batch_tot}]\t"
                     f"CON:{agg_content_loss:.3f}\tSTYL:{agg_style_loss:.2f}\t"

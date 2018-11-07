@@ -5,8 +5,8 @@ import ncluster
 import os
 
 IMAGE_NAME = 'style_transfer_v0'
-INSTANCE_TYPE = 'p3.16xlarge'
-NUM_GPUS = 8
+INSTANCE_TYPE = 'p3.2xlarge'
+NUM_GPUS = {'p3.2xlarge': 1, 'p3.8xlarge':4, 'p3.16xlarge':8}[INSTANCE_TYPE]
 
 ncluster.set_backend('aws')
 parser = argparse.ArgumentParser()
@@ -14,6 +14,7 @@ parser.add_argument('--name', type=str, default='style',
                     help="name of the current run, used for machine naming and tensorboard visualization")
 parser.add_argument('--machines', type=int, default=1,
                     help="how many machines to use")
+parser.add_argument('--fastai', action='store_true', help='Run fastai script.')
 args = parser.parse_args()
 
 lr = 1.0
@@ -54,7 +55,7 @@ def main():
                         #   disk_size=1000,
                         #   install_script=open('setup.sh').read(),
                         #   skip_efs=False,
-                          # spot=True
+                          spot=True
                           )
   job.upload('training')
   job.run(f'conda activate fastai')
@@ -73,12 +74,13 @@ def main():
   params = ['--phases', schedules[args.machines]]
   training_params = default_params + params
   training_params = ' '.join(map(format_params, training_params))
+  train_script = 'training/train_fastai.py' if args.fastai else 'training/train.py'
 
   # TODO: simplify args processing, or give link to actual commands run
   for i, task in enumerate(job.tasks):
-    dist_params = f'--nproc_per_node=8 --nnodes={args.machines} --node_rank={i} --master_addr={job.tasks[0].ip} --master_port={6006}'
-    cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} training/train_fastai.py {training_params}'
-    # cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} training/train.py {training_params}'
+    
+    dist_params = f'--nproc_per_node={NUM_GPUS} --nnodes={args.machines} --node_rank={i} --master_addr={job.tasks[0].ip} --master_port={6006}'
+    cmd = f'{nccl_params} python -m torch.distributed.launch {dist_params} {train_script} {training_params}'
     # task.run(f'echo {cmd} > {job.logdir}/task-{i}.cmd')  # save command-line
     task.run(cmd, non_blocking=True)
 

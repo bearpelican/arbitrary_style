@@ -23,7 +23,7 @@ def get_parser():
 #     parser.add_argument('data', metavar='DIR', help='path to dataset')
     parser.add_argument('--phases', type=str, help='Learning rate schedule')
     parser.add_argument('-j', '--workers', default=8, type=int, help='number of data loading workers (default: 8)')
-    parser.add_argument('--print-freq', '-p', default=5, type=int, help='print every')
+    parser.add_argument('--print-freq', '-p', default=50, type=int, help='print every')
     parser.add_argument('--dist-url', default='env://', type=str, help='url used to set up distributed training')
     parser.add_argument('--dist-backend', default='nccl', type=str, help='distributed backend')
     parser.add_argument('--local_rank', default=0, type=int, help='Used for multi-process training')
@@ -48,8 +48,8 @@ if args.local_rank > 0:
 print('Starting script')
 
 if is_distributed:
-    print('Distributed initializing process group')
     torch.cuda.set_device(args.local_rank)
+    print('Distributed initializing process group')
     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=env_world_size())
     assert(env_world_size() == dist.get_world_size())
     print("Distributed: success (%d/%d)"%(args.local_rank, dist.get_world_size()))
@@ -107,8 +107,8 @@ class DistributedRecorder(Recorder):
             metrics = smooth_loss.clone().detach().float().cuda()
             smooth_loss = reduce_tensor(metrics).cpu().numpy()
 
-            if self.b_count % 50 == 0:
-                print('Losses:', smooth_loss)
+        if self.b_count % args.print_freq == 0:
+            print('Losses:', smooth_loss)
             
         super().on_backward_begin(smooth_loss.sum())
         return last_loss.sum()
@@ -177,8 +177,8 @@ c_block = 1 # 1=3
 lr_mult = env_world_size()
 
 epochs = 10
-style_phases = [(2,1e2,st_wgt*3),(epochs,st_wgt,st_wgt)]
-cont_phases = [(2,ct_wgt,ct_wgt),(2,ct_wgt,ct_wgt*3),(epochs,ct_wgt,ct_wgt)]
+style_phases = [(1,1e2,st_wgt*2),(1,st_wgt,st_wgt/2)]*2 + [(epochs,st_wgt,st_wgt)]
+cont_phases = [(1,ct_wgt,ct_wgt/2),(1,ct_wgt,ct_wgt*2)]*2 + [(epochs,ct_wgt,ct_wgt)]
 
 
 loss_func = TransferLoss(m_vgg, ct_wgt, st_wgt, st_block_wgts, tva_wgt, data_norm, c_block)
@@ -188,7 +188,7 @@ w_sched = partial(WeightScheduler, loss_func=loss_func, cont_phases=cont_phases,
 learner.callback_fns = [DistributedRecorder, w_sched]
 
 print('Begin training')
-learner.fit_one_cycle(epochs, 1e-5*lr_mult)
+learner.fit_one_cycle(epochs, 5e-5*lr_mult)
 
 def eval_imgs(x_con, x_style, idx=0):
     with torch.no_grad(): 
