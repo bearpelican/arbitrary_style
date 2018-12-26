@@ -13,7 +13,7 @@ class FileLogger:
     else: self.logger = self.get_logger(output_dir, log_to_file=is_master)
 
   def get_logger(self, output_dir, log_to_file=True):
-    logger = logging.getLogger('imagenet_training')
+    logger = logging.getLogger('training')
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(message)s')
 

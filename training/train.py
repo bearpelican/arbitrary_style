@@ -106,22 +106,29 @@ if args.load and load_path.exists():
     m_com.load_state_dict(torch.load(load_path.expanduser(), map_location=lambda storage,loc: storage.cuda(args.local_rank)), strict=True)
     
 # Training
-epochs = 10
-optimizer = AdamW(m_com.parameters(), lr=1e-5, betas=(0.9,0.999), weight_decay=1e-5)
+epochs = 20
+optimizer = AdamW(m_com.parameters(), lr=1e-5, betas=(0.9,0.999), weight_decay=1e-3)
 
 lr_mult = env_world_size()
-scheduler = LRScheduler(optimizer, [{'ep': (0,3),      'lr': (1e-5*lr_mult,5e-4*lr_mult)}, 
-                                    {'ep': (3,6),      'lr': (5e-4*lr_mult,1e-5*lr_mult)},
+scheduler = LRScheduler(optimizer, [{'ep': (0,3),      'lr': (5e-6*lr_mult,1e-4*lr_mult)}, 
+                                    {'ep': (3,6),      'lr': (1e-4*lr_mult,5e-6*lr_mult)},
                                     {'ep': (6,epochs), 'lr': (1e-5*lr_mult,1e-7*lr_mult)}])
 
-st_wgt = 2.5e9
-# st_scheduler = Scheduler([{'ep': (0,1), 'st': (st_wgt)}, 
-st_scheduler = Scheduler([{'ep': (0,2), 'st': (st_wgt if args.load else 1e2,st_wgt*4)}, 
-                          {'ep': 2,     'st': (st_wgt)}], 'st')
+st_wgt = 3e9
+st_scheduler = Scheduler([{'ep': (0,1), 'st': (st_wgt if args.load else 1e2,st_wgt*2)}, 
+                          {'ep': (1,2), 'st': st_wgt},
+                          {'ep': (2,3), 'st': (st_wgt,st_wgt*2)}, 
+                          {'ep': (3,4), 'st': st_wgt},
+                          {'ep': 4,     'st': (st_wgt)}], 'st')
+ct_scheduler = Scheduler([{'ep': (0,1), 'ct': (ct_wgt,ct_wgt/2)}, 
+                          {'ep': (1,2), 'ct': (ct_wgt,ct_wgt*2)},
+                          {'ep': (2,3), 'ct': (ct_wgt,ct_wgt/2)}, 
+                          {'ep': (3,4), 'ct': (ct_wgt,ct_wgt*2)},
+                          {'ep': 4,     'ct': (ct_wgt)}], 'ct')
 ct_wgt = 5e2
 # st_wgt = 1e8
 tva_wgt = 1e-6
-style_block_wgts = [1,80,200,5] # 2,3,4,5
+st_block_wgts = [1,80,200,5] # 2,3,4,5
 c_block = 1 # 1=3
 
 
@@ -150,6 +157,7 @@ for e in range(epochs):
         out,_ = data_norm((out,None))
         
         m_loss.style_wgt = st_scheduler.get_val(e, batch_id, batch_tot)
+        m_loss.cont_wgt = ct_scheduler.get_val(e, batch_id, batch_tot)
         total_loss = m_loss(out, x_con, x_style)
         closs, sloss, tvaloss = total_loss.copy().detach().cpu()
 
@@ -178,18 +186,16 @@ for e in range(epochs):
                    )
             print(mesg)
 
-        save_interval = 1000
-        if (args.local_rank == 0) and (batch_id+1) % save_interval == 0:
-            if args.save:
-                print('Saving model: ', args.save)
-                save_path = Path(args.save).expanduser()
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(m_com.state_dict(), save_path)
+    if (args.env_rank() == 0) and args.save:
+        print('Saving model: ', args.save)
+        save_path = Path(args.save).expanduser()
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(m_com.state_dict(), save_path)
 
-                ep_save = save_path.with_name(f'{save_path.stem}_{e}').with_suffix(save_path.suffix)
+        ep_save = save_path.with_name(f'{save_path.stem}_{e}').with_suffix(save_path.suffix)
 
-                print('Saving epoch checkpoint: ', ep_save)
-                torch.save(m_com.state_dict(), ep_save)
+        print('Saving epoch checkpoint: ', ep_save)
+        torch.save(m_com.state_dict(), ep_save)
 
 def eval_imgs(x_con, x_style, idx=0):
     with torch.no_grad(): 

@@ -1,13 +1,15 @@
 from torch import nn
 import torch
 from fastai import *
+from fastai.vision import *
 
 class TransferLoss(nn.Module):
-    def __init__(self, m_vgg, cont_wgt, style_wgt, style_block_wgts, tva_wgt, data_norm, c_block=1):
+    def __init__(self, m_vgg, cont_wgt, style_wgt, style_block_wgts, tva_wgt, c_block=1):
         super().__init__()
         self.style_wgt,self.style_block_wgts = style_wgt,style_block_wgts
         self.cont_wgt,self.tva_wgt = cont_wgt,tva_wgt
-        self.m_vgg,self.data_norm,self.c_block = m_vgg,data_norm,c_block
+        self.m_vgg,self.c_block = m_vgg,c_block
+        self.data_norm,_ = normalize_funcs(*imagenet_stats)
         
     def forward(self, input, x_cont, x_style):
         style_wgts = [self.style_wgt*b for b in self.style_block_wgts]

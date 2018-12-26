@@ -5,7 +5,7 @@ import ncluster
 import os
 
 IMAGE_NAME = 'style_transfer_v0'
-INSTANCE_TYPE = 'p3.2xlarge'
+INSTANCE_TYPE = 'p3.16xlarge'
 NUM_GPUS = {'p3.2xlarge': 1, 'p3.8xlarge':4, 'p3.16xlarge':8}[INSTANCE_TYPE]
 
 ncluster.set_backend('aws')
@@ -64,8 +64,8 @@ def main():
 
   # Training script args
   default_params = [
-      # '--load', f'/ncluster/models/model_combined_imagenet_magenta_.pth',
-      '--load', f'/ncluster/models/{args.name}.pth',
+      # '--load', f'/ncluster/models/{args.name}.pth',
+      '--load', f'/ncluster/models/models/fastai_style_retrain_v3_6.pth',
       '--dist-url', 'file:///home/ubuntu/data/file.sync',
       '--resnet',
       '--save', f'/ncluster/models/{args.name}.pth'
